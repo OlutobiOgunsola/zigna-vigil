@@ -30,11 +30,13 @@ app.use(requestIdMiddleware);
 
 // Health check (no auth required)
 app.get('/health', async (req, res) => {
+  const toolCache = require('./services/toolCache.service');
   return res.json({
     status: 'ok',
     service: 'zigna-vigil',
     aiProvider: config.ai.provider,
     uptime: process.uptime(),
+    cache: toolCache.stats(),
   });
 });
 

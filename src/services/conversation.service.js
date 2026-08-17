@@ -2,6 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 const aiProvider = require('./aiProvider.service');
 const toolRegistry = require('../tools/registry');
 const toolAuthorization = require('./toolAuthorization.service');
+const toolCache = require('./toolCache.service');
 const usageService = require('./usage.service');
 const config = require('../config/environment');
 const sequelize = require('../config/database');
@@ -131,12 +132,24 @@ module.exports = {
 
           try {
             toolsUsed.push(tc.name);
+
+            // Check cache first
+            const cached = toolCache.get(activeBusinessId, tc.name, tc.args);
+            if (cached !== null) {
+              return { id: tc.id, name: tc.name, result: cached, fromCache: true };
+            }
+
+            // Cache miss — execute tool
             const toolResult = await tool.handler({
               businessId: activeBusinessId,
               businessType: activeBusinessType,
               userId,
               args: tc.args,
             });
+
+            // Store in cache
+            toolCache.set(activeBusinessId, tc.name, tc.args, toolResult);
+
             return { id: tc.id, name: tc.name, result: toolResult };
           } catch (err) {
             return { id: tc.id, name: tc.name, error: err.message };

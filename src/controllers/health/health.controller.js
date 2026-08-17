@@ -1,4 +1,5 @@
 const config = require('../../config/environment');
+const toolCache = require('../../services/toolCache.service');
 
 module.exports = {
   async check(req, res) {
@@ -8,6 +9,7 @@ module.exports = {
         uptime: process.uptime(),
         env: config.nodeEnv,
         aiProvider: config.ai.provider,
+        cache: toolCache.stats(),
       },
     });
   },

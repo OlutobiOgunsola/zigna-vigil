@@ -10,6 +10,7 @@ import SessionsList from './pages/sessions/index';
 import ErrorsList from './pages/errors/index';
 import ToolsList from './pages/tools/index';
 import AIList from './pages/ai/index';
+import HealthPage from './pages/health/index';
 
 function App() {
   return (
@@ -26,6 +27,7 @@ function App() {
                 <Route path="/tools" element={<ToolsList />} />
                 <Route path="/ai" element={<AIList />} />
                 <Route path="/errors" element={<ErrorsList />} />
+                <Route path="/health" element={<HealthPage />} />
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
               </Route>
             </Route>

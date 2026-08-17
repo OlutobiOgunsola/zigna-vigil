@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
-import { Activity, AlertTriangle, Brain, LayoutDashboard, LogOut, MessagesSquare, Settings, Wrench } from 'lucide-react';
+import { Activity, AlertTriangle, Brain, Heart, LayoutDashboard, LogOut, MessagesSquare, Settings, Wrench } from 'lucide-react';
 
 const NAV_ITEMS = [
   { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { path: '/tools', label: 'Tools', icon: Wrench },
   { path: '/ai', label: 'AI Interactions', icon: Brain },
   { path: '/errors', label: 'Errors', icon: AlertTriangle },
+  { path: '/health', label: 'Health', icon: Heart },
 ];
 
 export function Sidebar() {
