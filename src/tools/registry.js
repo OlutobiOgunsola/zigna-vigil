@@ -398,6 +398,160 @@ const toolRegistry = {
   },
 
   // ═══════════════════════════════════════════════════════════════════
+  // ZignaLyft Analytics Tools (COMPUTED WIDGETS — use these for insights)
+  // ═══════════════════════════════════════════════════════════════════
+
+  'zignalyft.analytics.dashboard': {
+    name: 'zignalyft.analytics.dashboard',
+    description: 'COMPREHENSIVE dashboard overview — returns 30+ computed widgets including member growth trends, revenue vs expenses, churn analysis, attendance rate, lead funnel, equipment status, inventory value, class utilization, and more. Use this for any high-level business question. Returns { widgets: { key: data } }.',
+    businessType: 'gym',
+    requiredPermissions: [PERMISSIONS.ZIGNALYFT_MEMBERS_VIEW_ALL, PERMISSIONS.ZIGNALYFT_SUBSCRIPTIONS_VIEW],
+    parameters: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Start date (YYYY-MM-DD)' },
+        to: { type: 'string', description: 'End date (YYYY-MM-DD)' },
+      },
+    },
+    handler: require('./zignalyft/analytics.dashboard'),
+  },
+
+  'zignalyft.analytics.members': {
+    name: 'zignalyft.analytics.members',
+    description: 'Member analytics — growth trends with time series, retention rate, avg membership duration, gender/age breakdowns, status breakdown, recent joiners, top referrers. Use for member-related questions.',
+    businessType: 'gym',
+    requiredPermissions: [PERMISSIONS.ZIGNALYFT_MEMBERS_VIEW_ALL],
+    parameters: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Start date (YYYY-MM-DD)' },
+        to: { type: 'string', description: 'End date (YYYY-MM-DD)' },
+      },
+    },
+    handler: require('./zignalyft/analytics.members'),
+  },
+
+  'zignalyft.analytics.subscriptions': {
+    name: 'zignalyft.analytics.subscriptions',
+    description: 'Subscription analytics — churn risk scoring (per-member probability + risk level), churn analysis by plan, renewal rate, subscription growth, plan distribution, plan performance, expiring subscriptions, average duration. Use for any subscription/renewal/churn question.',
+    businessType: 'gym',
+    requiredPermissions: [PERMISSIONS.ZIGNALYFT_SUBSCRIPTIONS_VIEW],
+    parameters: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Start date (YYYY-MM-DD)' },
+        to: { type: 'string', description: 'End date (YYYY-MM-DD)' },
+      },
+    },
+    handler: require('./zignalyft/analytics.subscriptions'),
+  },
+
+  'zignalyft.analytics.retention': {
+    name: 'zignalyft.analytics.retention',
+    description: 'Retention analytics — churn rate, churn by reason, churn trend over time, active goals count, goals by type, assessment count, avg weight change. Use for retention/churn/engagement questions.',
+    businessType: 'gym',
+    requiredPermissions: [PERMISSIONS.ZIGNALYFT_RETENTION_CHURN_VIEW, PERMISSIONS.ZIGNALYFT_RETENTION_GOALS_VIEW],
+    parameters: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Start date (YYYY-MM-DD)' },
+        to: { type: 'string', description: 'End date (YYYY-MM-DD)' },
+      },
+    },
+    handler: require('./zignalyft/analytics.retention'),
+  },
+
+  'zignalyft.analytics.leads': {
+    name: 'zignalyft.analytics.leads',
+    description: 'Lead analytics — total leads, new leads trend, conversion rate, open leads, leads by status/source, referral summary, recent leads. Use for lead pipeline and acquisition questions.',
+    businessType: 'gym',
+    requiredPermissions: [PERMISSIONS.ZIGNALYFT_LEADS_VIEW_ALL],
+    parameters: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Start date (YYYY-MM-DD)' },
+        to: { type: 'string', description: 'End date (YYYY-MM-DD)' },
+      },
+    },
+    handler: require('./zignalyft/analytics.leads'),
+  },
+
+  'zignalyft.analytics.expenses': {
+    name: 'zignalyft.analytics.expenses',
+    description: 'Expense analytics — total expenses, expenses by category, expense trend, payroll total/by type/trend, refunds total and count. Use for financial/expense questions.',
+    businessType: 'gym',
+    requiredPermissions: [PERMISSIONS.ZIGNALYFT_MEMBERS_VIEW_ALL],
+    parameters: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Start date (YYYY-MM-DD)' },
+        to: { type: 'string', description: 'End date (YYYY-MM-DD)' },
+      },
+    },
+    handler: require('./zignalyft/analytics.expenses'),
+  },
+
+  'zignalyft.analytics.inventory': {
+    name: 'zignalyft.analytics.inventory',
+    description: 'Inventory analytics — total value, item count, low stock count, value by category, stock movement trend, transaction counts by type, recent transactions. Use for inventory/stock questions.',
+    businessType: 'gym',
+    requiredPermissions: [PERMISSIONS.ZIGNALYFT_INVENTORY_VIEW],
+    parameters: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Start date (YYYY-MM-DD)' },
+        to: { type: 'string', description: 'End date (YYYY-MM-DD)' },
+      },
+    },
+    handler: require('./zignalyft/analytics.inventory'),
+  },
+
+  'zignalyft.analytics.equipment': {
+    name: 'zignalyft.analytics.equipment',
+    description: 'Equipment analytics — total count, operational rate, maintenance due, equipment value, by category, by status, maintenance cost trend, maintenance count. Use for equipment/facility questions.',
+    businessType: 'gym',
+    requiredPermissions: [PERMISSIONS.ZIGNALYFT_EQUIPMENT_VIEW],
+    parameters: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Start date (YYYY-MM-DD)' },
+        to: { type: 'string', description: 'End date (YYYY-MM-DD)' },
+      },
+    },
+    handler: require('./zignalyft/analytics.equipment'),
+  },
+
+  'zignalyft.analytics.shifts': {
+    name: 'zignalyft.analytics.shifts',
+    description: 'Shift analytics — shifts count, total hours, staff on shift, coverage by day, recent shifts. Use for staffing/scheduling questions.',
+    businessType: 'gym',
+    requiredPermissions: [PERMISSIONS.ZIGNALYFT_SHIFTS_VIEW],
+    parameters: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Start date (YYYY-MM-DD)' },
+        to: { type: 'string', description: 'End date (YYYY-MM-DD)' },
+      },
+    },
+    handler: require('./zignalyft/analytics.shifts'),
+  },
+
+  'zignalyft.analytics.performance': {
+    name: 'zignalyft.analytics.performance',
+    description: 'Daily performance report — weighted score (5-100), tone (critical/good/steady/attention), headline, summary, and actionable insights with weights. This is the AI-powered daily report combining 10+ domains. Use for "how is the gym doing" or "daily report" questions.',
+    businessType: 'gym',
+    requiredPermissions: [PERMISSIONS.ZIGNALYFT_MEMBERS_VIEW_ALL],
+    parameters: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Start date (YYYY-MM-DD)' },
+        to: { type: 'string', description: 'End date (YYYY-MM-DD)' },
+      },
+    },
+    handler: require('./zignalyft/analytics.performance'),
+  },
+
+  // ═══════════════════════════════════════════════════════════════════
   // ZignaStay Tools
   // ═══════════════════════════════════════════════════════════════════
   'zignastay.bookings.list': {
