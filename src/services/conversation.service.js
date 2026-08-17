@@ -13,6 +13,8 @@ const { getLogger } = require('../utils/logging');
 const log = getLogger();
 
 const MAX_TOOL_ROUNDS = 5;
+const sqlNow = () => (sequelize.getDialect() === 'sqlite' ? "datetime('now')" : 'NOW()');
+const isActiveCheck = () => 'is_active = 1';
 
 module.exports = {
   async processMessage({
@@ -100,8 +102,10 @@ module.exports = {
       lastResult = result;
 
       // No tool calls — AI returned a text response, we're done
-      if (result.finishReason !== 'tool_calls' || !result.toolCalls) {
-        finalResponse = result.response;
+      if (result.finishReason !== 'tool_calls' || !result.toolCalls?.length) {
+        finalResponse = aiProvider.stripToolCallMarkup
+          ? aiProvider.stripToolCallMarkup(result.response)
+          : result.response;
         break;
       }
 
@@ -195,15 +199,24 @@ module.exports = {
             tools: [], // No tools — force text response
             context,
           });
-          finalResponse = summaryResult.response || 'I fetched the data but could not generate a summary.';
+          finalResponse = aiProvider.stripToolCallMarkup(
+            summaryResult.response || 'I fetched the data but could not generate a summary.'
+          );
           totalInputTokens += summaryResult.inputTokens || 0;
           totalOutputTokens += summaryResult.outputTokens || 0;
         } catch (e) {
           finalResponse = 'I fetched the data but could not generate a summary.';
         }
       } else {
-        finalResponse = lastResult.response || 'I fetched the data but could not generate a summary.';
+        finalResponse = aiProvider.stripToolCallMarkup(
+          lastResult.response || 'I fetched the data but could not generate a summary.'
+        );
       }
+    }
+
+    // Never leak tool markup to the client
+    if (finalResponse) {
+      finalResponse = aiProvider.stripToolCallMarkup(finalResponse);
     }
 
     const durationMs = Date.now() - startTime;
@@ -215,12 +228,17 @@ module.exports = {
 
     // 6. Persist outbound message + tool executions + AI interaction (non-blocking)
     this._persistOutbound(persistCtx, {
-      toolName: toolsUsed.length > 0 ? toolsUsed.join(', ') : null,
+      toolName: toolsUsed.length > 0 ? [...new Set(toolsUsed)].join(', ') : null,
+      toolsUsed: [...new Set(toolsUsed)],
       toolArgs: null,
       toolResult: null,
       toolDurationMs: 0,
       permissionUsed: null,
-      aiResult: lastResult,
+      aiResult: {
+        ...(lastResult || {}),
+        response: finalResponse,
+        finishReason: toolsUsed.length > 0 ? (lastResult?.finishReason || 'stop') : lastResult?.finishReason,
+      },
       aiLatencyMs: 0,
       durationMs,
       toolsOffered: accessibleToolNames,
@@ -252,22 +270,23 @@ module.exports = {
   async _persistInbound(ctx, message) {
     const t = await sequelize.transaction();
     try {
+      const now = sqlNow();
       if (ctx.isNewSession) {
         await sequelize.query(
           `INSERT INTO vigil_sessions (id, product_id, product_slug, business_id, business_name, user_id, user_fullname, user_email, role, started_at, last_active_at, message_count, is_active)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 1, 1)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${now}, ${now}, 1, 1)`,
           { replacements: [ctx.sessionId, ctx.productId, ctx.productSlug, ctx.businessId, ctx.businessName, ctx.userId, ctx.userFullname, ctx.userEmail || null, ctx.role], transaction: t }
         );
       } else {
         await sequelize.query(
-          `UPDATE vigil_sessions SET last_active_at = NOW(), message_count = message_count + 1 WHERE id = ? AND is_active = 1`,
+          `UPDATE vigil_sessions SET last_active_at = ${now}, message_count = message_count + 1 WHERE id = ? AND ${isActiveCheck()}`,
           { replacements: [ctx.sessionId], transaction: t }
         );
       }
 
       await sequelize.query(
         `INSERT INTO vigil_messages (id, session_id, product_id, product_slug, business_id, business_name, user_id, user_fullname, user_email, role, request_id, direction, content, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'inbound', ?, 'success', NOW())`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'inbound', ?, 'success', ${now})`,
         { replacements: [uuidv4(), ctx.sessionId, ctx.productId, ctx.productSlug, ctx.businessId, ctx.businessName, ctx.userId, ctx.userFullname, ctx.userEmail || null, ctx.role, ctx.requestId, message], transaction: t }
       );
 
@@ -282,20 +301,21 @@ module.exports = {
     const t = await sequelize.transaction();
     try {
       const outboundMessageId = uuidv4();
+      const now = sqlNow();
 
       await sequelize.query(
         `INSERT INTO vigil_messages (id, session_id, product_id, product_slug, business_id, business_name, user_id, user_fullname, user_email, role, request_id, direction, content, ai_provider, ai_model, input_tokens, output_tokens, duration_ms, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, 'success', NOW())`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, 'success', ${now})`,
         {
           replacements: [
             outboundMessageId, ctx.sessionId, ctx.productId, ctx.productSlug,
             ctx.businessId, ctx.businessName, ctx.userId, ctx.userFullname, ctx.userEmail || null,
             ctx.role, ctx.requestId,
-            data.toolName ? `Tool: ${data.toolName}` : (data.aiResult.response || ''),
-            data.aiResult.model || config.ai.provider,
-            data.aiResult.model,
-            data.aiResult.inputTokens || 0,
-            data.aiResult.outputTokens || 0,
+            data.aiResult?.response || (data.toolName ? `Tools used: ${data.toolName}` : ''),
+            data.aiResult?.model || config.ai.provider,
+            data.aiResult?.model,
+            data.aiResult?.inputTokens || 0,
+            data.aiResult?.outputTokens || 0,
             data.durationMs,
           ],
           transaction: t,
@@ -305,43 +325,43 @@ module.exports = {
       // AI interaction row
       await sequelize.query(
         `INSERT INTO vigil_ai_interactions (id, message_id, session_id, product_id, product_slug, business_id, business_name, user_id, user_fullname, provider, model, input_tokens, output_tokens, total_tokens, finish_reason, tools_offered, tool_selected, latency_ms, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success', NOW())`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success', ${now})`,
         {
           replacements: [
             uuidv4(), outboundMessageId, ctx.sessionId,
             ctx.productId, ctx.productSlug, ctx.businessId, ctx.businessName, ctx.userId, ctx.userFullname,
             config.ai.provider,
-            data.aiResult.model || config.ai.model,
-            data.aiResult.inputTokens || 0,
-            data.aiResult.outputTokens || 0,
-            (data.aiResult.inputTokens || 0) + (data.aiResult.outputTokens || 0),
-            data.aiResult.finishReason || null,
+            data.aiResult?.model || config.ai.model,
+            data.aiResult?.inputTokens || 0,
+            data.aiResult?.outputTokens || 0,
+            (data.aiResult?.inputTokens || 0) + (data.aiResult?.outputTokens || 0),
+            data.aiResult?.finishReason || null,
             JSON.stringify(data.toolsOffered || []),
-            data.toolName ? data.toolName.slice(0, 255) : null,
+            data.toolName ? String(data.toolName).slice(0, 500) : null,
             data.aiLatencyMs,
           ],
           transaction: t,
         }
       );
 
-      // Tool execution row (if tool was called)
-      if (data.toolName) {
-        const resultSummary = data.toolResult
-          ? JSON.stringify(data.toolResult).slice(0, 2000)
-          : null;
+      // One row per unique tool used
+      const toolsList = data.toolsUsed?.length
+        ? data.toolsUsed
+        : (data.toolName ? data.toolName.split(',').map((s) => s.trim()).filter(Boolean) : []);
 
+      for (const toolName of toolsList) {
         await sequelize.query(
           `INSERT INTO vigil_tool_executions (id, message_id, session_id, product_id, product_slug, business_id, business_name, user_id, user_fullname, tool_name, tool_args, tool_result_summary, tool_status, permission_used, duration_ms, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, NOW())`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, ${now})`,
           {
             replacements: [
               uuidv4(), outboundMessageId, ctx.sessionId,
               ctx.productId, ctx.productSlug, ctx.businessId, ctx.businessName, ctx.userId, ctx.userFullname,
-              data.toolName,
+              toolName.slice(0, 100),
               JSON.stringify(data.toolArgs || {}),
-              resultSummary,
+              null,
               data.permissionUsed || null,
-              data.toolDurationMs,
+              data.toolDurationMs || 0,
             ],
             transaction: t,
           }

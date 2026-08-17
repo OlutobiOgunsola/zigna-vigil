@@ -1,11 +1,14 @@
 const { ForbiddenError } = require('../errors');
 const { BUSINESS_ENTITY_ERROR_MESSAGES } = require('../lib/literature/errors.literature');
 const { HEADER_TO_PRODUCT } = require('../config/products');
+const { ROLE_PERMISSIONS } = require('../config/permissions');
 
 const HEADER_TO_BUSINESS_TYPE = {
   'x-gym-id': 'gym',
   'x-hotel-id': 'hotel',
 };
+
+const VALID_ROLES = new Set(Object.keys(ROLE_PERMISSIONS));
 
 module.exports = async function businessEntityMiddleware(req, res, next) {
   try {
@@ -32,10 +35,24 @@ module.exports = async function businessEntityMiddleware(req, res, next) {
     req.productSlug = product.slug;
     req.activeBusinessType = HEADER_TO_BUSINESS_TYPE[header];
 
-    // TODO: When product APIs are available, validate membership here:
-    // 1. Call product API to verify user has an active membership for this entity
-    // 2. Set req.activeRole from the membership response
-    req.activeRole = req.isSuperAdmin ? 'super_admin' : 'user';
+    // Role resolution order:
+    // 1. super_admin from JWT
+    // 2. x-user-role header (product dashboards send this)
+    // 3. body.role
+    // 4. fallback: owner for gym, hotel_owner for hotel (never bare "user")
+    if (req.isSuperAdmin) {
+      req.activeRole = 'super_admin';
+    } else {
+      const claimed = String(
+        req.headers['x-user-role'] || req.body?.role || ''
+      ).trim().toLowerCase();
+
+      if (claimed && VALID_ROLES.has(claimed)) {
+        req.activeRole = claimed;
+      } else {
+        req.activeRole = req.activeBusinessType === 'hotel' ? 'hotel_owner' : 'owner';
+      }
+    }
 
     next();
   } catch (error) {

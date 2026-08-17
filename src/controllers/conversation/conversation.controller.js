@@ -32,22 +32,11 @@ module.exports = {
         sessionId: session_id || null,
       });
 
-      if (result.tool) {
-        return res.ok({
-          message: 'Tool executed',
-          data: {
-            tool: result.tool,
-            result: result.toolResult,
-            response: null,
-            session_id: result.sessionId,
-          },
-        });
-      }
-
       return res.ok({
-        message: 'Response generated',
+        message: result.toolsUsed?.length ? 'Tools executed' : 'Response generated',
         data: {
-          tool: null,
+          tool: result.toolsUsed?.[0] || null,
+          tools_used: result.toolsUsed || [],
           result: null,
           response: result.response,
           session_id: result.sessionId,

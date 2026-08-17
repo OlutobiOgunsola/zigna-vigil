@@ -149,49 +149,105 @@ Be concise. Use tools for real data. Never fabricate.`;
 // ── OpenAI-compatible handler (shared by openai + opencode) ────────
 
 /**
- * Parse tool calls from text content when models output them as text
- * instead of proper tool_calls format. Supports multiple formats:
- * - <tool_calls>...</tool_calls> XML
- * - JSON blocks with name/arguments
- * - Simple "tool_name param1 value1 param2 value2"
+ * Strip any leaked tool-call markup from assistant text before showing to users.
+ */
+function stripToolCallMarkup(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text
+    // Remove entire tool_calls / tool_call blocks (hy3-free and standard)
+    .replace(/<tool_calls(?::[^>\s]*)?>[\s\S]*?<\/tool_calls(?::[^>\s]*)?>/gi, '')
+    .replace(/<tool_call(?::[^>\s]*)?>[\s\S]*?<\/tool_call(?::[^>\s]*)?>/gi, '')
+    // Orphan open/close tags
+    .replace(/<\/?tool_calls(?::[^>\s]*)?>/gi, '')
+    .replace(/<\/?tool_call(?::[^>\s]*)?>/gi, '')
+    // leftover bare tool lines like "zignalyft.analytics.dashboard"
+    .replace(/^[ \t]*(?:zignalyft|zignastay|vigil)\.[a-z0-9_.]+[ \t]*$/gim, '')
+    // leftover param lines from tool dumps
+    .replace(/^[ \t]*(?:from|to|status|search|range|memberId|instructorId)\s*[:=]\s*\S+[ \t]*$/gim, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Parse tool calls from text when models dump them as markup instead of
+ * proper OpenAI tool_calls. Primary format from hy3-free:
+ *
+ *   I'll fetch X.
+ *   <tool_calls:abc>
+ *   <tool_call:abc>zignalyft.analytics.dashboard
+ *     from: 2026-08-01
+ *     to: 2026-08-17
+ *   </tool_call:abc>
+ *   </tool_calls:abc>
  */
 function parseTextToolCalls(text, tools) {
   if (!text || !tools?.length) return [];
 
   const toolNames = new Set(tools.map((t) => t.name));
+  const sortedNames = [...toolNames].sort((a, b) => b.length - a.length);
   const calls = [];
+  const seen = new Set();
 
-  // Format 1: XML-style <tool_calls> tags
-  const xmlMatch = text.match(/<tool_calls>([\s\S]*?)<\/tool_calls>/i);
-  if (xmlMatch) {
-    const inner = xmlMatch[1];
-    // Parse individual tool_call blocks
-    const callBlocks = inner.match(/<tool_call[^>]*>([\s\S]*?)<\/tool_call>/gi) || [];
-    for (const block of callBlocks) {
-      const content = block.replace(/<tool_call[^>]*>/i, '').replace(/<\/tool_call>/i, '').trim();
-      const args = {};
-      // Extract key-value pairs from the content
-      const lines = content.split('\n').map((l) => l.trim()).filter(Boolean);
-      let toolName = null;
-      for (const line of lines) {
-        const kvMatch = line.match(/^(\w+)\s+(.+)$/);
-        if (kvMatch) {
-          const key = kvMatch[1];
-          const value = kvMatch[2].trim();
-          if (toolNames.has(key)) {
-            toolName = key;
-          } else if (toolName) {
-            args[key] = value;
-          }
-        }
+  const pushCall = (name, args) => {
+    if (!toolNames.has(name)) return;
+    const key = `${name}:${JSON.stringify(args || {})}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    calls.push({
+      id: `text-${Date.now()}-${calls.length}`,
+      name,
+      args: args || {},
+    });
+  };
+
+  const parseArgsFromBlock = (block) => {
+    const args = {};
+    // "from: 2026-08-01" or "from 2026-08-01"
+    const kvRe = /(?:^|\n)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[:=]\s*([^\n<]+)/g;
+    let m;
+    while ((m = kvRe.exec(block)) !== null) {
+      const key = m[1].trim();
+      const value = m[2].trim().replace(/^["']|["']$/g, '');
+      if (key && !toolNames.has(key) && key !== 'name') {
+        args[key] = value;
       }
-      if (toolName && toolNames.has(toolName)) {
-        calls.push({ id: `text-${Date.now()}-${calls.length}`, name: toolName, args });
+    }
+    return args;
+  };
+
+  // Format 1a: hy3-free <tool_call:ID> ... </tool_call:ID>
+  const hy3Blocks = text.matchAll(/<tool_call(?::[^>\s]*)?>([\s\S]*?)<\/tool_call(?::[^>\s]*)?>/gi);
+  for (const match of hy3Blocks) {
+    const inner = match[1].trim();
+    let toolName = null;
+    for (const name of sortedNames) {
+      if (inner.includes(name) || new RegExp(`^\\s*${name.replace(/\./g, '\\.')}`, 'i').test(inner)) {
+        toolName = name;
+        break;
+      }
+    }
+    if (toolName) pushCall(toolName, parseArgsFromBlock(inner));
+  }
+
+  // Format 1b: standard <tool_call>...</tool_call> already covered above via optional :ID
+
+  // Format 1c: whole <tool_calls:ID>...</tool_calls:ID> if no individual blocks matched
+  if (calls.length === 0) {
+    const wrapper = text.match(/<tool_calls(?::[^>\s]*)?>([\s\S]*?)<\/tool_calls(?::[^>\s]*)?>/i);
+    if (wrapper) {
+      const inner = wrapper[1];
+      // Split on tool name occurrences
+      for (const name of sortedNames) {
+        const re = new RegExp(`${name.replace(/\./g, '\\.')}([\\s\\S]*?)(?=zignalyft\\.|zignastay\\.|vigil\\.|$|<\\/|$)`, 'gi');
+        let m;
+        while ((m = re.exec(inner)) !== null) {
+          pushCall(name, parseArgsFromBlock(m[1] || ''));
+        }
       }
     }
   }
 
-  // Format 2: JSON-style tool calls in text
+  // Format 2: JSON-style
   if (calls.length === 0) {
     const jsonPattern = /(?:tool_call|function_call|call)\s*(?:\(|:)\s*(\{[\s\S]*?\})/gi;
     let jsonMatch;
@@ -199,33 +255,28 @@ function parseTextToolCalls(text, tools) {
       try {
         const parsed = JSON.parse(jsonMatch[1]);
         if (parsed.name && toolNames.has(parsed.name)) {
-          calls.push({ id: `text-${Date.now()}-${calls.length}`, name: parsed.name, args: parsed.arguments || parsed.args || {} });
+          pushCall(parsed.name, parsed.arguments || parsed.args || {});
         }
-      } catch (e) { /* not valid JSON, skip */ }
+      } catch (e) { /* skip */ }
     }
   }
 
-  // Format 3: Simple "tool_name param1 value1" pattern
+  // Format 3: bare tool name + nearby params (last resort, max 3 tools)
   if (calls.length === 0) {
-    for (const toolName of toolNames) {
+    for (const toolName of sortedNames) {
+      if (calls.length >= 3) break;
       const pattern = new RegExp(`\\b${toolName.replace(/\./g, '\\.')}\\b`, 'i');
-      if (pattern.test(text)) {
-        const toolDef = tools.find((t) => t.name === toolName);
-        const args = {};
-        // Try to extract parameter values from surrounding text
-        if (toolDef?.parameters?.properties) {
-          for (const [paramName, paramDef] of Object.entries(toolDef.parameters.properties)) {
-            // Look for "paramName value" or "paramName: value" patterns
-            const paramPattern = new RegExp(`${paramName}[:\\s]+([\\w\\-\\.]+)`, 'i');
-            const paramMatch = text.match(paramPattern);
-            if (paramMatch) {
-              args[paramName] = paramMatch[1];
-            }
-          }
+      if (!pattern.test(text)) continue;
+      const toolDef = tools.find((t) => t.name === toolName);
+      const args = {};
+      if (toolDef?.parameters?.properties) {
+        for (const paramName of Object.keys(toolDef.parameters.properties)) {
+          const paramPattern = new RegExp(`${paramName}\\s*[:=]\\s*([\\w\\-.]+)`, 'i');
+          const paramMatch = text.match(paramPattern);
+          if (paramMatch) args[paramName] = paramMatch[1];
         }
-        calls.push({ id: `text-${Date.now()}-${calls.length}`, name: toolName, args });
-        break; // Only match one tool
       }
+      pushCall(toolName, args);
     }
   }
 
@@ -295,19 +346,24 @@ const openaiCompatible = async ({ message, messages, tools, context, apiKey, mod
     result.args = result.toolCalls[0].args;
     result.finishReason = 'tool_calls';
   } else {
-    result.response = choice?.message?.content || 'I could not determine an action for your request.';
+    const rawContent = choice?.message?.content || 'I could not determine an action for your request.';
 
-    // Fallback: parse tool calls from text content (some models output tool calls as text)
+    // Fallback: parse tool calls from text content (hy3-free dumps them as markup)
     if (tools?.length > 0) {
-      const textToolCalls = parseTextToolCalls(result.response, tools);
+      const textToolCalls = parseTextToolCalls(rawContent, tools);
       if (textToolCalls.length > 0) {
         result.toolCalls = textToolCalls;
         result.tool = textToolCalls[0].name;
         result.args = textToolCalls[0].args;
         result.finishReason = 'tool_calls';
-        result.response = null;
+        // Keep preamble text if any; strip markup so it never leaks to the user
+        const preamble = stripToolCallMarkup(rawContent);
+        result.response = preamble || null;
+        return result;
       }
     }
+
+    result.response = stripToolCallMarkup(rawContent);
   }
 
   return result;
@@ -515,5 +571,7 @@ module.exports = {
 
   resolveModel,
   buildSystemPrompt,
+  stripToolCallMarkup,
+  parseTextToolCalls,
 };
 
