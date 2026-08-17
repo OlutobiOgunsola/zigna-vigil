@@ -1,0 +1,29 @@
+/* ---- Widget micro-interactions ---- */
+
+@keyframes widgetSlideIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.widget-enter {
+  display: grid;
+  animation: widgetSlideIn 0.5s ease-out backwards;
+  will-change: transform, opacity;
+}
+
+.widget-hover {
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.widget-hover:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 4px 12px -6px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+}
+
+button:not(:disabled) { cursor: pointer; }
+
+button.inline-flex.items-center {
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, gap 0.25s ease;
+}
+button.inline-flex.items-center.gap-2:hover:not(:disabled) { gap: 10px; }
