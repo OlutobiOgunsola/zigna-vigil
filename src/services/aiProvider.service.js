@@ -148,6 +148,90 @@ Be concise. Use tools for real data. Never fabricate.`;
 
 // ── OpenAI-compatible handler (shared by openai + opencode) ────────
 
+/**
+ * Parse tool calls from text content when models output them as text
+ * instead of proper tool_calls format. Supports multiple formats:
+ * - <tool_calls>...</tool_calls> XML
+ * - JSON blocks with name/arguments
+ * - Simple "tool_name param1 value1 param2 value2"
+ */
+function parseTextToolCalls(text, tools) {
+  if (!text || !tools?.length) return [];
+
+  const toolNames = new Set(tools.map((t) => t.name));
+  const calls = [];
+
+  // Format 1: XML-style <tool_calls> tags
+  const xmlMatch = text.match(/<tool_calls>([\s\S]*?)<\/tool_calls>/i);
+  if (xmlMatch) {
+    const inner = xmlMatch[1];
+    // Parse individual tool_call blocks
+    const callBlocks = inner.match(/<tool_call[^>]*>([\s\S]*?)<\/tool_call>/gi) || [];
+    for (const block of callBlocks) {
+      const content = block.replace(/<tool_call[^>]*>/i, '').replace(/<\/tool_call>/i, '').trim();
+      const args = {};
+      // Extract key-value pairs from the content
+      const lines = content.split('\n').map((l) => l.trim()).filter(Boolean);
+      let toolName = null;
+      for (const line of lines) {
+        const kvMatch = line.match(/^(\w+)\s+(.+)$/);
+        if (kvMatch) {
+          const key = kvMatch[1];
+          const value = kvMatch[2].trim();
+          if (toolNames.has(key)) {
+            toolName = key;
+          } else if (toolName) {
+            args[key] = value;
+          }
+        }
+      }
+      if (toolName && toolNames.has(toolName)) {
+        calls.push({ id: `text-${Date.now()}-${calls.length}`, name: toolName, args });
+      }
+    }
+  }
+
+  // Format 2: JSON-style tool calls in text
+  if (calls.length === 0) {
+    const jsonPattern = /(?:tool_call|function_call|call)\s*(?:\(|:)\s*(\{[\s\S]*?\})/gi;
+    let jsonMatch;
+    while ((jsonMatch = jsonPattern.exec(text)) !== null) {
+      try {
+        const parsed = JSON.parse(jsonMatch[1]);
+        if (parsed.name && toolNames.has(parsed.name)) {
+          calls.push({ id: `text-${Date.now()}-${calls.length}`, name: parsed.name, args: parsed.arguments || parsed.args || {} });
+        }
+      } catch (e) { /* not valid JSON, skip */ }
+    }
+  }
+
+  // Format 3: Simple "tool_name param1 value1" pattern
+  if (calls.length === 0) {
+    for (const toolName of toolNames) {
+      const pattern = new RegExp(`\\b${toolName.replace(/\./g, '\\.')}\\b`, 'i');
+      if (pattern.test(text)) {
+        const toolDef = tools.find((t) => t.name === toolName);
+        const args = {};
+        // Try to extract parameter values from surrounding text
+        if (toolDef?.parameters?.properties) {
+          for (const [paramName, paramDef] of Object.entries(toolDef.parameters.properties)) {
+            // Look for "paramName value" or "paramName: value" patterns
+            const paramPattern = new RegExp(`${paramName}[:\\s]+([\\w\\-\\.]+)`, 'i');
+            const paramMatch = text.match(paramPattern);
+            if (paramMatch) {
+              args[paramName] = paramMatch[1];
+            }
+          }
+        }
+        calls.push({ id: `text-${Date.now()}-${calls.length}`, name: toolName, args });
+        break; // Only match one tool
+      }
+    }
+  }
+
+  return calls;
+}
+
 const openaiCompatible = async ({ message, messages, tools, context, apiKey, model, baseUrl, defaultBaseUrl }) => {
   const url = (baseUrl || defaultBaseUrl) + '/chat/completions';
 
@@ -212,6 +296,18 @@ const openaiCompatible = async ({ message, messages, tools, context, apiKey, mod
     result.finishReason = 'tool_calls';
   } else {
     result.response = choice?.message?.content || 'I could not determine an action for your request.';
+
+    // Fallback: parse tool calls from text content (some models output tool calls as text)
+    if (tools?.length > 0) {
+      const textToolCalls = parseTextToolCalls(result.response, tools);
+      if (textToolCalls.length > 0) {
+        result.toolCalls = textToolCalls;
+        result.tool = textToolCalls[0].name;
+        result.args = textToolCalls[0].args;
+        result.finishReason = 'tool_calls';
+        result.response = null;
+      }
+    }
   }
 
   return result;

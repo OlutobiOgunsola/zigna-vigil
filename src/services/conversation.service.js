@@ -179,9 +179,31 @@ module.exports = {
       }
     }
 
-    // If we exhausted all rounds without a text response, use the last result
+    // If we exhausted all rounds without a text response, make one final AI call
+    // with all accumulated tool results, asking for a summary
     if (finalResponse === null && lastResult) {
-      finalResponse = lastResult.response || 'I fetched the data but could not generate a summary.';
+      if (toolsUsed.length > 0) {
+        // Make one more AI call with tool results context, forcing a text response
+        conversationHistory.push({
+          role: 'user',
+          content: 'You now have all the data. Summarise the key findings in natural language with actionable insights. Do NOT call any more tools.',
+        });
+        try {
+          const summaryResult = await aiProvider.analyse({
+            message: 'Summarise the data',
+            messages: conversationHistory,
+            tools: [], // No tools — force text response
+            context,
+          });
+          finalResponse = summaryResult.response || 'I fetched the data but could not generate a summary.';
+          totalInputTokens += summaryResult.inputTokens || 0;
+          totalOutputTokens += summaryResult.outputTokens || 0;
+        } catch (e) {
+          finalResponse = 'I fetched the data but could not generate a summary.';
+        }
+      } else {
+        finalResponse = lastResult.response || 'I fetched the data but could not generate a summary.';
+      }
     }
 
     const durationMs = Date.now() - startTime;
@@ -295,7 +317,7 @@ module.exports = {
             (data.aiResult.inputTokens || 0) + (data.aiResult.outputTokens || 0),
             data.aiResult.finishReason || null,
             JSON.stringify(data.toolsOffered || []),
-            data.toolName || null,
+            data.toolName ? data.toolName.slice(0, 255) : null,
             data.aiLatencyMs,
           ],
           transaction: t,
