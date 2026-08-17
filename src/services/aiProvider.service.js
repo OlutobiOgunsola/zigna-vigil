@@ -123,6 +123,8 @@ RULES:
 10. For "why" questions, cross-reference multiple data sources to find root causes.
 11. For "how are we doing" questions, give a comprehensive assessment with specific numbers and comparisons.
 12. When you fetch data, ALWAYS summarize the key findings in natural language with actionable insights.
+13. MULTI-TURN MEMORY: You receive prior messages in this session. Use them. If the user says "that", "those", "the previous", "same as before", "and the members?", resolve references from earlier turns. Do not pretend you forgot earlier answers. Only ask for clarification if the reference is genuinely ambiguous.
+14. Never output tool-call markup, XML, or raw function names to the user — only natural language answers.
 
 Gym ID: ${bizId}. User role: ${role}.`;
   }

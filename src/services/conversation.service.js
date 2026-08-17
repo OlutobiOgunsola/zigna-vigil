@@ -13,8 +13,90 @@ const { getLogger } = require('../utils/logging');
 const log = getLogger();
 
 const MAX_TOOL_ROUNDS = 5;
+/** Max prior turns (user+assistant pairs ~ 2 msgs each) loaded into the model */
+const MAX_HISTORY_MESSAGES = 24;
+/** Soft cap on chars of prior history content (keeps token use bounded) */
+const MAX_HISTORY_CHARS = 24000;
 
 module.exports = {
+  /**
+   * Load prior user/assistant turns for a session from MySQL.
+   * Returns OpenAI-style { role, content }[] (no system message).
+   */
+  async loadSessionHistory(sessionId, { userId, businessId } = {}) {
+    if (!sessionId) return [];
+
+    try {
+      const replacements = [sessionId];
+      let ownership = '';
+      if (userId != null) {
+        ownership += ' AND user_id = ?';
+        replacements.push(userId);
+      }
+      if (businessId != null) {
+        ownership += ' AND business_id = ?';
+        replacements.push(businessId);
+      }
+
+      // Newest first, then reverse so oldest is first for the model
+      const [rows] = await sequelize.query(
+        `SELECT direction, content, role
+         FROM vigil_messages
+         WHERE session_id = ? ${ownership}
+           AND status = 'success'
+           AND content IS NOT NULL
+           AND TRIM(content) != ''
+         ORDER BY created_at DESC
+         LIMIT ?`,
+        { replacements: [...replacements, MAX_HISTORY_MESSAGES] }
+      );
+
+      if (!rows?.length) return [];
+
+      const chronological = [...rows].reverse();
+      const history = [];
+      let totalChars = 0;
+
+      for (const row of chronological) {
+        const isUser = row.direction === 'inbound';
+        let content = String(row.content || '').trim();
+        if (!content) continue;
+
+        // Skip internal tool dump rows that slipped into older data
+        if (!isUser && content.startsWith('Tool: ') && content.length < 200) continue;
+        if (!isUser && content.startsWith('Tools used: ') && content.length < 200) continue;
+
+        if (!isUser && aiProvider.stripToolCallMarkup) {
+          content = aiProvider.stripToolCallMarkup(content);
+        }
+        if (!content) continue;
+
+        // Truncate very long past turns
+        if (content.length > 4000) {
+          content = `${content.slice(0, 4000)}\n…[truncated]`;
+        }
+
+        if (totalChars + content.length > MAX_HISTORY_CHARS) break;
+        totalChars += content.length;
+
+        history.push({
+          role: isUser ? 'user' : 'assistant',
+          content,
+        });
+      }
+
+      // Ensure we don't end on a dangling user message without reply
+      // (model gets confused); drop trailing incomplete pairs only if last is user
+      // — actually the NEW user message is appended after, so trailing assistant is fine.
+      // If last history item is user (failed prior turn), keep it — still useful context.
+
+      return history;
+    } catch (err) {
+      log.warn('Failed to load session history', { sessionId, error: err.message });
+      return [];
+    }
+  },
+
   async processMessage({
     message,
     userId,
@@ -28,6 +110,7 @@ module.exports = {
     userFullname,
     userEmail,
     sessionId: existingSessionId,
+    clientHistory = [],
   }) {
     const startTime = Date.now();
     const requestId = uuidv4();
@@ -39,10 +122,28 @@ module.exports = {
     if (!sessionId) {
       sessionId = uuidv4();
       isNewSession = true;
+    } else {
+      // Validate session still exists and belongs to this user/business
+      try {
+        const [existing] = await sequelize.query(
+          `SELECT id FROM vigil_sessions
+           WHERE id = ? AND user_id = ? AND business_id = ? AND is_active = 1
+           LIMIT 1`,
+          { replacements: [sessionId, userId, activeBusinessId] }
+        );
+        if (!existing?.length) {
+          // Stale client session id — start fresh (client history still used)
+          sessionId = uuidv4();
+          isNewSession = true;
+        }
+      } catch (err) {
+        log.warn('Session lookup failed, starting new session', { error: err.message });
+        sessionId = uuidv4();
+        isNewSession = true;
+      }
     }
 
     // Persist session, messages, tool executions, AI interactions
-    // All non-blocking — conversation completes even if DB write fails
     const persistCtx = {
       sessionId,
       isNewSession,
@@ -70,12 +171,60 @@ module.exports = {
     const accessibleToolNames = toolAuthorization.getAccessibleTools(activeRole, toolRegistry);
     const accessibleTools = accessibleToolNames.map((name) => toolRegistry[name]);
 
-    // 3. Build conversation history for tool loop
+    // 3. Build multi-turn context
+    // Primary: clientHistory (messages already shown in the chat UI — always in sync)
+    // Fallback: DB session history (survives reload when client sends session_id only)
     const systemPrompt = aiProvider.buildSystemPrompt(context);
+
+    let priorTurns = [];
+    if (Array.isArray(clientHistory) && clientHistory.length > 0) {
+      priorTurns = clientHistory
+        .filter((m) => m.role === 'user' || m.role === 'assistant')
+        .map((m) => ({
+          role: m.role,
+          content:
+            m.role === 'assistant' && aiProvider.stripToolCallMarkup
+              ? aiProvider.stripToolCallMarkup(m.content)
+              : m.content,
+        }))
+        .filter((m) => m.content && m.content.trim())
+        .slice(-MAX_HISTORY_MESSAGES);
+
+      // Drop trailing user message if it duplicates the new message (client may include it)
+      if (
+        priorTurns.length > 0 &&
+        priorTurns[priorTurns.length - 1].role === 'user' &&
+        priorTurns[priorTurns.length - 1].content.trim() === message.trim()
+      ) {
+        priorTurns = priorTurns.slice(0, -1);
+      }
+    } else if (!isNewSession) {
+      priorTurns = await this.loadSessionHistory(sessionId, {
+        userId,
+        businessId: activeBusinessId,
+      });
+    }
+
     const conversationHistory = [
       { role: 'system', content: systemPrompt },
+      ...priorTurns,
       { role: 'user', content: message },
     ];
+
+    log.info('Conversation context built', {
+      sessionId,
+      priorTurns: priorTurns.length,
+      source: clientHistory?.length ? 'client' : isNewSession ? 'none' : 'db',
+      requestId,
+    });
+
+    // Persist inbound ASAP so the next concurrent request can see it from DB
+    try {
+      await this._persistInbound(persistCtx, message);
+      persistCtx.isNewSession = false; // session row now exists
+    } catch (err) {
+      log.warn('Failed to persist inbound message (pre-AI)', { error: err.message, requestId });
+    }
 
     // 4. Tool execution loop — keep calling AI until it returns a text response
     let finalResponse = null;
@@ -219,12 +368,7 @@ module.exports = {
 
     const durationMs = Date.now() - startTime;
 
-    // 5. Persist inbound message + session (non-blocking)
-    this._persistInbound(persistCtx, message).catch((err) => {
-      log.warn('Failed to persist inbound message', { error: err.message, requestId });
-    });
-
-    // 6. Persist outbound message + tool executions + AI interaction (non-blocking)
+    // Inbound already persisted before AI call. Persist outbound + tools (non-blocking).
     this._persistOutbound(persistCtx, {
       toolName: toolsUsed.length > 0 ? [...new Set(toolsUsed)].join(', ') : null,
       toolsUsed: [...new Set(toolsUsed)],

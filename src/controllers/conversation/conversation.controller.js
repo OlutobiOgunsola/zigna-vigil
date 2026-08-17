@@ -3,7 +3,7 @@ const conversationService = require('../../services/conversation.service');
 module.exports = {
   async send(req, res, next) {
     try {
-      const { message, business_name, user_fullname, user_email, session_id } = req.body;
+      const { message, business_name, user_fullname, user_email, session_id, history } = req.body;
 
       if (!message || typeof message !== 'string' || !message.trim()) {
         return res.badRequest({ message: 'Message is required.' });
@@ -15,6 +15,24 @@ module.exports = {
 
       if (!user_fullname || typeof user_fullname !== 'string' || !user_fullname.trim()) {
         return res.badRequest({ message: 'user_fullname is required.' });
+      }
+
+      // Optional client-side history: [{ role: 'user'|'assistant', content: '...' }, ...]
+      let clientHistory = [];
+      if (Array.isArray(history)) {
+        clientHistory = history
+          .filter(
+            (m) =>
+              m &&
+              (m.role === 'user' || m.role === 'assistant') &&
+              typeof m.content === 'string' &&
+              m.content.trim()
+          )
+          .map((m) => ({
+            role: m.role,
+            content: String(m.content).trim().slice(0, 4000),
+          }))
+          .slice(-24);
       }
 
       const result = await conversationService.processMessage({
@@ -30,6 +48,7 @@ module.exports = {
         userFullname: user_fullname.trim(),
         userEmail: user_email || null,
         sessionId: session_id || null,
+        clientHistory,
       });
 
       return res.ok({
