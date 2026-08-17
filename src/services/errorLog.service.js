@@ -27,11 +27,10 @@ module.exports = {
     try {
       const errorObj = error instanceof Error ? error : new Error(String(error));
 
-      const now = sequelize.getDialect() === 'sqlite' ? "datetime('now')" : 'NOW()';
       await sequelize.query(
         `INSERT INTO vigil_error_logs
           (id, request_id, session_id, product_id, product_slug, business_id, business_name, user_id, user_fullname, role, error_code, error_name, error_message, error_stack, source, tool_name, ai_provider, endpoint, method, ip_address, user_agent, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${now})`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
         {
           replacements: [
             uuidv4(),

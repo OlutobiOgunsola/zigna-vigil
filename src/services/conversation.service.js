@@ -13,8 +13,6 @@ const { getLogger } = require('../utils/logging');
 const log = getLogger();
 
 const MAX_TOOL_ROUNDS = 5;
-const sqlNow = () => (sequelize.getDialect() === 'sqlite' ? "datetime('now')" : 'NOW()');
-const isActiveCheck = () => 'is_active = 1';
 
 module.exports = {
   async processMessage({
@@ -270,23 +268,22 @@ module.exports = {
   async _persistInbound(ctx, message) {
     const t = await sequelize.transaction();
     try {
-      const now = sqlNow();
       if (ctx.isNewSession) {
         await sequelize.query(
           `INSERT INTO vigil_sessions (id, product_id, product_slug, business_id, business_name, user_id, user_fullname, user_email, role, started_at, last_active_at, message_count, is_active)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${now}, ${now}, 1, 1)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 1, 1)`,
           { replacements: [ctx.sessionId, ctx.productId, ctx.productSlug, ctx.businessId, ctx.businessName, ctx.userId, ctx.userFullname, ctx.userEmail || null, ctx.role], transaction: t }
         );
       } else {
         await sequelize.query(
-          `UPDATE vigil_sessions SET last_active_at = ${now}, message_count = message_count + 1 WHERE id = ? AND ${isActiveCheck()}`,
+          `UPDATE vigil_sessions SET last_active_at = NOW(), message_count = message_count + 1 WHERE id = ? AND is_active = 1`,
           { replacements: [ctx.sessionId], transaction: t }
         );
       }
 
       await sequelize.query(
         `INSERT INTO vigil_messages (id, session_id, product_id, product_slug, business_id, business_name, user_id, user_fullname, user_email, role, request_id, direction, content, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'inbound', ?, 'success', ${now})`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'inbound', ?, 'success', NOW())`,
         { replacements: [uuidv4(), ctx.sessionId, ctx.productId, ctx.productSlug, ctx.businessId, ctx.businessName, ctx.userId, ctx.userFullname, ctx.userEmail || null, ctx.role, ctx.requestId, message], transaction: t }
       );
 
@@ -301,11 +298,10 @@ module.exports = {
     const t = await sequelize.transaction();
     try {
       const outboundMessageId = uuidv4();
-      const now = sqlNow();
 
       await sequelize.query(
         `INSERT INTO vigil_messages (id, session_id, product_id, product_slug, business_id, business_name, user_id, user_fullname, user_email, role, request_id, direction, content, ai_provider, ai_model, input_tokens, output_tokens, duration_ms, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, 'success', ${now})`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, 'success', NOW())`,
         {
           replacements: [
             outboundMessageId, ctx.sessionId, ctx.productId, ctx.productSlug,
@@ -325,7 +321,7 @@ module.exports = {
       // AI interaction row
       await sequelize.query(
         `INSERT INTO vigil_ai_interactions (id, message_id, session_id, product_id, product_slug, business_id, business_name, user_id, user_fullname, provider, model, input_tokens, output_tokens, total_tokens, finish_reason, tools_offered, tool_selected, latency_ms, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success', ${now})`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success', NOW())`,
         {
           replacements: [
             uuidv4(), outboundMessageId, ctx.sessionId,
@@ -352,7 +348,7 @@ module.exports = {
       for (const toolName of toolsList) {
         await sequelize.query(
           `INSERT INTO vigil_tool_executions (id, message_id, session_id, product_id, product_slug, business_id, business_name, user_id, user_fullname, tool_name, tool_args, tool_result_summary, tool_status, permission_used, duration_ms, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, ${now})`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, NOW())`,
           {
             replacements: [
               uuidv4(), outboundMessageId, ctx.sessionId,
